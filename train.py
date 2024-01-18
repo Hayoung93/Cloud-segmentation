@@ -163,6 +163,7 @@ def validate(config, val_loader, model, criterion):
 
             # compute output
             if config['deep_supervision']:
+                raise Exception("Deep supervision is currently not supported")
                 outputs = model(input)
                 loss = 0
                 for output in outputs:
@@ -172,10 +173,13 @@ def validate(config, val_loader, model, criterion):
             else:
                 output = model(input)
                 loss = criterion(output, target)
-                iou = iou_score(output, target)
+                avg_meters['loss'].update(loss.item(), input.size(0))
+                for out, tar in zip(output, target):
+                    iou = iou_score(out, tar)
+                    avg_meters['iou'].update(iou)
 
-            avg_meters['loss'].update(loss.item(), input.size(0))
-            avg_meters['iou'].update(iou, input.size(0))
+            # avg_meters['loss'].update(loss.item(), input.size(0))
+            # avg_meters['iou'].update(iou, input.size(0))
 
             postfix = OrderedDict([
                 ('loss', avg_meters['loss'].avg),
