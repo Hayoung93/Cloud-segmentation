@@ -55,7 +55,7 @@ def captioning_api():
         f.save(filename_save)
         print(filename_save)
 
-        output_name = single_infer(filename_save)[0]
+        output_name = single_infer(filename_save)
 
         return send_file(output_name, mimetype="image/png")
 
