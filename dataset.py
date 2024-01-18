@@ -1,13 +1,15 @@
 import os
 
-import cv2
+from PIL import Image
 import numpy as np
 import torch
 import torch.utils.data
+from torchvision import transforms as ttf
+from torchvision.transforms import functional as F
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, img_ids, img_dir, mask_dir, img_ext, mask_ext, num_classes, transform=None):
+    def __init__(self, img_ids, img_dir, mask_dir, img_ext, mask_ext, num_classes, mode, size):
         """
         Args:
             img_ids (list): Image ids.
@@ -28,18 +30,10 @@ class Dataset(torch.utils.data.Dataset):
             │   ├── ...
             |
             └── masks
-                ├── 0
-                |   ├── 0a7e06.png
-                |   ├── 0aab0a.png
-                |   ├── 0b1761.png
-                |   ├── ...
-                |
-                ├── 1
-                |   ├── 0a7e06.png
-                |   ├── 0aab0a.png
-                |   ├── 0b1761.png
-                |   ├── ...
-                ...
+                ├── 0a7e06.png
+                ├── 0aab0a.png
+                ├── 0b1761.png
+                ├── ...
         """
         self.img_ids = img_ids
         self.img_dir = img_dir
@@ -47,30 +41,43 @@ class Dataset(torch.utils.data.Dataset):
         self.img_ext = img_ext
         self.mask_ext = mask_ext
         self.num_classes = num_classes
-        self.transform = transform
+
+        assert mode in ["train", "test", "val"]
+        self.mode = mode
+        self.size = size
+        self.resize = ttf.Resize(size)
+        self.normalize = ttf.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+        self.totensor = ttf.ToTensor()
+        self.colorjitter = ttf.ColorJitter(0.2, 0.2, 0.2, 0.1)
+
 
     def __len__(self):
         return len(self.img_ids)
 
     def __getitem__(self, idx):
         img_id = self.img_ids[idx]
-        
-        img = cv2.imread(os.path.join(self.img_dir, img_id + self.img_ext))
+        img_id = ".".join(img_id.split(".")[:-1])  # remove extension
+        img = Image.open(os.path.join(self.img_dir, img_id + self.img_ext)).convert("RGB")
+        mask = Image.open(os.path.join(self.mask_dir, img_id.replace("RGB", "gt") + self.img_ext))
 
-        mask = []
-        for i in range(self.num_classes):
-            mask.append(cv2.imread(os.path.join(self.mask_dir, str(i),
-                        img_id + self.mask_ext), cv2.IMREAD_GRAYSCALE)[..., None])
-        mask = np.dstack(mask)
-
-        if self.transform is not None:
-            augmented = self.transform(image=img, mask=mask)
-            img = augmented['image']
-            mask = augmented['mask']
-        
-        img = img.astype('float32') / 255
-        img = img.transpose(2, 0, 1)
-        mask = mask.astype('float32') / 255
-        mask = mask.transpose(2, 0, 1)
+        img = self.resize(img)
+        mask = self.resize(mask)
+        if self.mode == "train":
+            # random rotation
+            rand_rot = torch.randint(0, 4, (1,)).item()
+            if rand_rot:
+                img = F.rotate(img, rand_rot * 90.)
+                mask = F.rotate(mask, rand_rot * 90.)
+            # random hflip
+            rand_flip = torch.randint(0, 2, (1,)).item()
+            if rand_flip:
+                img = F.hflip(img)
+                mask = F.hflip(mask)
+            # random color jitter
+            rand_color = torch.randint(0, 2, (1,)).item()
+            if rand_color:
+                img = self.colorjitter(img)
+        img = self.normalize(self.totensor(img))
+        mask = self.totensor(mask)
         
         return img, mask, {'img_id': img_id}

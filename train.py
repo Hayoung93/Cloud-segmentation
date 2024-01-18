@@ -9,8 +9,6 @@ import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.optim as optim
 import yaml
-from albumentations.augmentations import transforms
-from albumentations.core.composition import Compose, OneOf
 from sklearn.model_selection import train_test_split
 from torch.optim import lr_scheduler
 from tqdm import tqdm
@@ -26,6 +24,9 @@ LOSS_NAMES = losses.__all__
 LOSS_NAMES.append('BCEWithLogitsLoss')
 
 
+from resnet50_unetpp import UNetWithResnet50Encoder
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
@@ -35,10 +36,10 @@ def parse_args():
                         help='number of total epochs to run')
     parser.add_argument('-b', '--batch_size', default=16, type=int,
                         metavar='N', help='mini-batch size (default: 16)')
+    parser.add_argument("--save_per", type=int, default=5)
     
     # model
     parser.add_argument('--arch', '-a', metavar='ARCH', default='NestedUNet',
-                        choices=ARCH_NAMES,
                         help='model architecture: ' +
                         ' | '.join(ARCH_NAMES) +
                         ' (default: NestedUNet)')
@@ -62,6 +63,8 @@ def parse_args():
     # dataset
     parser.add_argument('--dataset', default='dsb2018_96',
                         help='dataset name')
+    parser.add_argument("--train_dir", type=str)
+    parser.add_argument("--eval_dir", type=str)
     parser.add_argument('--img_ext', default='.png',
                         help='image file extension')
     parser.add_argument('--mask_ext', default='.png',
@@ -214,9 +217,10 @@ def main():
 
     # create model
     print("=> creating model %s" % config['arch'])
-    model = archs.__dict__[config['arch']](config['num_classes'],
-                                           config['input_channels'],
-                                           config['deep_supervision'])
+    if config["arch"] in ["v1", "NestedUNet"]:
+        model = archs.NestedUNet(config['num_classes'], config['input_channels'], config['deep_supervision'])
+    elif config["arch"] in ["v2"]:
+        model = UNetWithResnet50Encoder(n_classes=config["num_classes"])
 
     model = model.cuda()
 
@@ -244,44 +248,31 @@ def main():
         raise NotImplementedError
 
     # Data loading code
-    img_ids = glob(os.path.join('inputs', config['dataset'], 'images', '*' + config['img_ext']))
-    img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
-
-    train_img_ids, val_img_ids = train_test_split(img_ids, test_size=0.2, random_state=41)
-
-    train_transform = Compose([
-        transforms.RandomRotate90(),
-        transforms.Flip(),
-        OneOf([
-            transforms.HueSaturationValue(),
-            transforms.RandomBrightness(),
-            transforms.RandomContrast(),
-        ], p=1),
-        transforms.Resize(config['input_h'], config['input_w']),
-        transforms.Normalize(),
-    ])
-
-    val_transform = Compose([
-        transforms.Resize(config['input_h'], config['input_w']),
-        transforms.Normalize(),
-    ])
+    train_img_dir = os.path.join(config["train_dir"], "images")
+    train_mask_dir = os.path.join(config["train_dir"], "masks")
+    val_img_dir = os.path.join(config["eval_dir"], "images")
+    val_mask_dir = os.path.join(config["eval_dir"], "masks")
+    train_img_ids = sorted(os.listdir(train_img_dir))
+    val_img_ids = sorted(os.listdir(val_img_dir))
 
     train_dataset = Dataset(
         img_ids=train_img_ids,
-        img_dir=os.path.join('inputs', config['dataset'], 'images'),
-        mask_dir=os.path.join('inputs', config['dataset'], 'masks'),
+        img_dir=train_img_dir,
+        mask_dir=train_mask_dir,
         img_ext=config['img_ext'],
         mask_ext=config['mask_ext'],
         num_classes=config['num_classes'],
-        transform=train_transform)
+        mode="train",
+        size=(config["input_h"], config["input_w"]))
     val_dataset = Dataset(
         img_ids=val_img_ids,
-        img_dir=os.path.join('inputs', config['dataset'], 'images'),
-        mask_dir=os.path.join('inputs', config['dataset'], 'masks'),
+        img_dir=val_img_dir,
+        mask_dir=val_mask_dir,
         img_ext=config['img_ext'],
         mask_ext=config['mask_ext'],
         num_classes=config['num_classes'],
-        transform=val_transform)
+        mode="val",
+        size=(config["input_h"], config["input_w"]))
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -341,6 +332,8 @@ def main():
             best_iou = val_log['iou']
             print("=> saved best model")
             trigger = 0
+        if (epoch + 1) % config["save_per"] == 0:
+            torch.save(model.state_dict(), 'models/{}/model_{:03d}.pth'.format(config['name'], epoch))
 
         # early stopping
         if config['early_stopping'] >= 0 and trigger >= config['early_stopping']:
