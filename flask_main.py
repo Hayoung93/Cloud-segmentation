@@ -20,7 +20,9 @@ def single_infer(file_path):
     img = Image.open(file_path).convert("RGB")
     img = resize(img)
     img = normalize(totensor(img)).unsqueeze(0).cuda().to(torch.float32)
-    out = model(img)
+    with torch.inference_mode():
+        out = model(img)
+        out = torch.sigmoid(out[0][0]).data.cpu().numpy()
     out_ = out > 0.5
     out_name = ".".join(file_path.split("/")[-1].split(".")[:-1]) + "_result.png"
     out_fp = os.path.join(app.config["UPLOAD_DIR"], out_name)
