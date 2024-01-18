@@ -8,6 +8,7 @@ from werkzeug.utils import secure_filename
 from datetime import datetime
 
 import cv2
+import numpy as np
 import torch
 from torchvision import transforms
 from PIL import Image
@@ -23,7 +24,7 @@ def single_infer(file_path):
     with torch.inference_mode():
         out = model(img)
         out = torch.sigmoid(out[0][0]).data.cpu().numpy()
-    out_ = out > 0.5
+    out_ = (out > 0.5).astype(np.uint8) * 255
     out_name = ".".join(file_path.split("/")[-1].split(".")[:-1]) + "_result.png"
     out_fp = os.path.join(app.config["UPLOAD_DIR"], out_name)
     cv2.imwrite(out_fp, out_)
