@@ -1,9 +1,11 @@
 import argparse
 import os
+import random
 from collections import OrderedDict
 from glob import glob
 
 import pandas as pd
+import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
@@ -37,7 +39,7 @@ def parse_args():
     parser.add_argument('-b', '--batch_size', default=16, type=int,
                         metavar='N', help='mini-batch size (default: 16)')
     parser.add_argument("--save_per", type=int, default=5)
-    
+
     # model
     parser.add_argument('--arch', '-a', metavar='ARCH', default='NestedUNet',
                         help='model architecture: ' +
@@ -98,6 +100,10 @@ def parse_args():
                         metavar='N', help='early stopping (default: -1)')
     
     parser.add_argument('--num_workers', default=4, type=int)
+
+    parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--resume', type=str)
+    parser.add_argument("--seed", type=int, default=40)
 
     config = parser.parse_args()
 
@@ -196,6 +202,11 @@ def validate(config, val_loader, model, criterion):
 def main():
     config = vars(parse_args())
 
+    seed = config["seed"]
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
     if config['name'] is None:
         if config['deep_supervision']:
             config['name'] = '%s_%s_wDS' % (config['dataset'], config['arch'])
@@ -225,6 +236,11 @@ def main():
         model = archs.NestedUNet(config['num_classes'], config['input_channels'], config['deep_supervision'])
     elif config["arch"] in ["v2"]:
         model = UNetWithResnet50Encoder(n_classes=config["num_classes"])
+
+    if config['resume'] is not None and config['resume'] != '' and os.path.isfile(config['resume']):
+        cp = torch.load(config['resume'])
+        msg = model.load_state_dict(cp)
+        print("Loaded weight: ", msg)
 
     model = model.cuda()
 
@@ -258,6 +274,18 @@ def main():
     val_mask_dir = os.path.join(config["eval_dir"], "masks")
     train_img_ids = sorted(os.listdir(train_img_dir))
     val_img_ids = sorted(os.listdir(val_img_dir))
+
+    # filter empty images - only for 38cloud and 95cloud
+    if config["dataset"] in ["38cloud", "95cloud"]:
+        with open(os.path.join(config["train_dir"], "nonempty.txt"), "r") as f:
+            nonempty = f.read().splitlines()
+        nonempty_set = set(nonempty)
+        tii_set = set(map(lambda x: x[4:-4], train_img_ids))
+        # vii_set = set(map(lambda x: x[4:-4], val_img_ids))
+        tii = list(tii_set.intersection(nonempty_set))
+        # vii = list(vii_set.intersection(nonempty_set))
+        train_img_ids = list(map(lambda x: "RGB_" + x + ".png", tii))
+        # val_img_ids = list(map(lambda x: "RGB_" + x + ".png", vii))
 
     train_dataset = Dataset(
         img_ids=train_img_ids,
@@ -299,6 +327,11 @@ def main():
         ('val_loss', []),
         ('val_iou', []),
     ])
+
+    if config['eval']:
+        val_log = validate(config, val_loader, model, criterion)
+        print(val_log)
+        exit(0)
 
     best_iou = 0
     trigger = 0
@@ -345,7 +378,7 @@ def main():
             break
 
         torch.cuda.empty_cache()
-
+    print("Best IoU: ", best_iou)
 
 if __name__ == '__main__':
     main()
