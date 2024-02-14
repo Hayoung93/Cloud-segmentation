@@ -27,6 +27,7 @@ LOSS_NAMES.append('BCEWithLogitsLoss')
 
 
 from resnet50_unetpp import UNetWithResnet50Encoder
+from attention_unet import AttentionUNet, init_weights
 
 
 def parse_args():
@@ -237,6 +238,11 @@ def main():
         model = archs.NestedUNet(config['num_classes'], config['input_channels'], config['deep_supervision'])
     elif config["arch"] in ["v2"]:
         model = UNetWithResnet50Encoder(n_classes=config["num_classes"], pretrain=config["pretrain"])
+    elif config["arch"] in ["v3"]:
+        model = AttentionUNet(3, config["num_classes"])
+        model = init_weights(model, "kaiming")
+    else:
+        raise Exception("Not supported architecture")
 
     if config['resume'] is not None and config['resume'] != '' and os.path.isfile(config['resume']):
         cp = torch.load(config['resume'])
