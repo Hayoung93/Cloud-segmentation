@@ -104,6 +104,7 @@ def parse_args():
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--resume', type=str)
     parser.add_argument("--seed", type=int, default=40)
+    parser.add_argument("--pretrain", type=str, default="imagenet1k")
 
     config = parser.parse_args()
 
@@ -235,7 +236,7 @@ def main():
     if config["arch"] in ["v1", "NestedUNet"]:
         model = archs.NestedUNet(config['num_classes'], config['input_channels'], config['deep_supervision'])
     elif config["arch"] in ["v2"]:
-        model = UNetWithResnet50Encoder(n_classes=config["num_classes"])
+        model = UNetWithResnet50Encoder(n_classes=config["num_classes"], pretrain=config["pretrain"])
 
     if config['resume'] is not None and config['resume'] != '' and os.path.isfile(config['resume']):
         cp = torch.load(config['resume'])

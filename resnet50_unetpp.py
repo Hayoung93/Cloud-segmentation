@@ -81,9 +81,24 @@ class UpBlockForUNetWithResNet50(nn.Module):
 class UNetWithResnet50Encoder(nn.Module):
     DEPTH = 6
 
-    def __init__(self, n_classes=2):
+    def __init__(self, n_classes=2, pretrain=None):
         super().__init__()
-        resnet = torchvision.models.resnet.resnet50(pretrained=True)
+        resnet = torchvision.models.resnet.resnet50(pretrained=False)
+        if pretrain is not None:
+            if pretrain == "imagenet1k":
+                resnet = torchvision.models.resnet.resnet50(pretrained=True)
+            elif pretrain == "swav":
+                checkpoint = torch.hub.load_state_dict_from_url('https://dl.fbaipublicfiles.com/deepcluster/swav_800ep_pretrain.pth.tar',map_location="cpu")
+                state_dict = {k.replace("module.", ""): v for k, v in checkpoint.items()}
+                msg = resnet.load_state_dict(state_dict, strict=False)
+                print("Loaded SWAV weight: {}".format(msg))
+            elif pretrain == "dino":
+                checkpoint = torch.load("/workspace/UNetpp/dino_resnet50_pretrain.pth")
+                state_dict = {k.replace("module.", ""): v for k, v in checkpoint.items()}
+                msg = resnet.load_state_dict(state_dict, strict=False)
+                print("Loaded DINO weight: {}".format(msg))
+            else:
+                raise Exception("Not supported pretrained weight")
         down_blocks = []
         up_blocks = []
         self.input_block = nn.Sequential(*list(resnet.children()))[:3]
