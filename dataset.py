@@ -47,7 +47,8 @@ class ColotJitter4Channels(torch.nn.Module):
 
 
 class CloudData(torch.utils.data.Dataset):
-    def __init__(self, root, transforms=None, mode="train", nonempty_38=None, nonempty_95=None, include_95=False, include_nir=False, bit=8, path_38=None, path_95=None, seed=0):
+    def __init__(self, config, root, transforms=None, mode="train", nonempty_38=None, nonempty_95=None, include_95=False, include_nir=False, bit=8, path_38=None, path_95=None, seed=0):
+        self.config = config
         self.root = root
         self.transforms = transforms
         assert mode in ["train", "eval", "test"]
@@ -179,9 +180,10 @@ class CloudData(torch.utils.data.Dataset):
                     img = F.hflip(img)
                     gt = F.hflip(gt)
                 # random color jitter
-                rand_color = torch.randint(0, 2, (1,)).item()
-                if rand_color:
-                    img = self.colorjitter(img)
+                if not self.config["exclude_colorjitter"]:
+                    rand_color = torch.randint(0, 2, (1,)).item()
+                    if rand_color:
+                        img = self.colorjitter(img)
             return img, gt, img_fp
         elif self.mode == "eval":
             # paths
@@ -276,9 +278,10 @@ class CloudData(torch.utils.data.Dataset):
                     img = F.hflip(img)
                     gt = F.hflip(gt)
                 # random color jitter
-                rand_color = torch.randint(0, 2, (1,)).item()
-                if rand_color:
-                    img = self.colorjitter(img)
+                if not self.config["exclude_colorjitter"]:
+                    rand_color = torch.randint(0, 2, (1,)).item()
+                    if rand_color:
+                        img = self.colorjitter(img)
             return img, gt, red_fp
         elif self.mode == "eval":
             # paths

@@ -111,6 +111,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=40)
     parser.add_argument("--pretrain", type=str, default="imagenet1k")
     parser.add_argument("--include_nir", action="store_true")
+    parser.add_argument("--exclude_colorjitter", action="store_true")
 
     config = parser.parse_args()
 
@@ -340,13 +341,13 @@ def main():
         transforms_train = None
         transforms_val = None
         transforms_test = None
-        trainset = CloudData("/data/data", transforms_train, "train", "/data/data/38Cloud/train/nonempty.txt",
+        trainset = CloudData(config, "/data/data", transforms_train, "train", "/data/data/38Cloud/train/nonempty.txt",
                             "/data/data/95Cloud/95-cloud_training_only_additional_to38-cloud/nonempty_95.txt",
                             True if config["dataset"][:2] == "95" else False,
                             config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed=seed) 
-        valset = CloudData("/data/data", transforms_val, "eval", None, None, False,
+        valset = CloudData(config, "/data/data", transforms_val, "eval", None, None, False,
                             config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed=seed)
-        # testset = CloudData("/data/data", transforms_test, "train", None, None, False,
+        # testset = CloudData(config, "/data/data", transforms_test, "train", None, None, False,
         #                     config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed)
         trainloader = DataLoader(trainset, config["batch_size"], True, num_workers=config["num_workers"],
                                 drop_last=False, worker_init_fn=seed_worker, generator=g)
