@@ -43,7 +43,7 @@ def parse_args():
                         help='number of total epochs to run')
     parser.add_argument('-b', '--batch_size', default=16, type=int,
                         metavar='N', help='mini-batch size (default: 16)')
-    parser.add_argument("--save_per", type=int, default=5)
+    parser.add_argument("--save_per", type=int, default=10)
 
     # model
     parser.add_argument('--arch', '-a', metavar='ARCH', default='NestedUNet',
@@ -282,11 +282,6 @@ def main():
     else:
         raise Exception("Not supported architecture")
 
-    if config['resume'] is not None and config['resume'] != '' and os.path.isfile(config['resume']):
-        cp = torch.load(config['resume'])
-        msg = model.load_state_dict(cp)
-        print("Loaded weight: ", msg)
-
     model = model.cuda()
 
     params = filter(lambda p: p.requires_grad, model.parameters())
@@ -313,6 +308,24 @@ def main():
         scheduler = None
     else:
         raise NotImplementedError
+
+
+    best_iou = 0
+    best_epoch = -1
+    trigger = 0
+    start_epoch = 0
+    if config['resume'] is not None and config['resume'] != '' and os.path.isfile(config['resume']):
+        # load model
+        cp = torch.load(config['resume'])
+        msg = model.load_state_dict(cp["state_dict"])
+        print("Loaded weight: ", msg)
+        # load optimizer and scheduler
+        optimizer.load_state_dict(cp["optimizer"])
+        scheduler.load_state_dict(cp["scheduler"])
+        # load others
+        best_iou = cp["best_iou"]
+        best_epoch = cp["best_epoch"]
+        start_epoch = cp["epoch"] + 1
 
     def seed_worker(worker_id):
         worker_seed = torch.initial_seed() % 2**32
@@ -358,10 +371,7 @@ def main():
         print(val_log)
         exit(0)
 
-    best_iou = 0
-    best_epoch = -1
-    trigger = 0
-    for epoch in range(config['epochs']):
+    for epoch in range(start_epoch, config['epochs']):
         print('Epoch [%d/%d]' % (epoch, config['epochs']))
 
         # train for one epoch
@@ -390,14 +400,29 @@ def main():
         trigger += 1
 
         if val_log['iou'] > best_iou:
-            torch.save(model.state_dict(), 'models/%s/model.pth' %
-                       config['name'])
             best_iou = val_log['iou']
             best_epoch = epoch
-            print("=> saved best model")
             trigger = 0
+            save_dict = {
+                "state_dict": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "best_iou": best_iou,
+                "best_epoch": best_epoch,
+                "epoch": epoch
+            }
+            torch.save(save_dict, 'models/%s/model_best.pth' % config['name'])
+            print("=> saved best model")
         if (epoch + 1) % config["save_per"] == 0:
-            torch.save(model.state_dict(), 'models/{}/model_{:03d}.pth'.format(config['name'], epoch))
+            save_dict = {
+                "state_dict": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "best_iou": best_iou,
+                "best_epoch": best_epoch,
+                "epoch": epoch
+            }
+            torch.save(save_dict, 'models/{}/model_{:03d}.pth'.format(config['name'], epoch))
 
         # early stopping
         if config['early_stopping'] >= 0 and trigger >= config['early_stopping']:
@@ -405,6 +430,17 @@ def main():
             break
 
         torch.cuda.empty_cache()
+
+        # save last status for resume
+        save_dict = {
+            "state_dict": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "best_iou": best_iou,
+            "best_epoch": best_epoch,
+            "epoch": epoch
+        }
+        torch.save(save_dict, 'models/{}/model.pth'.format(config['name']))
     print("Best validation IoU: {} ({})".format(best_iou, best_epoch))
 
 if __name__ == '__main__':
