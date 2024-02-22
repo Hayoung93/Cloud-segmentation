@@ -13,11 +13,12 @@ import torch.optim as optim
 import yaml
 from sklearn.model_selection import train_test_split
 from torch.optim import lr_scheduler
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import archs
 import losses
-from dataset import Dataset
+from dataset import Dataset, CloudData
 from metrics import iou_score
 from utils import AverageMeter, str2bool
 
@@ -25,9 +26,12 @@ ARCH_NAMES = archs.__all__
 LOSS_NAMES = losses.__all__
 LOSS_NAMES.append('BCEWithLogitsLoss')
 
+torch.backends.cudnn.benchmark = False
+torch.use_deterministic_algorithms(True)
 
 from resnet50_unetpp import UNetWithResnet50Encoder
 from attention_unet import AttentionUNet, init_weights
+from nafnet import NAFNet
 
 
 def parse_args():
@@ -75,7 +79,7 @@ def parse_args():
 
     # optimizer
     parser.add_argument('--optimizer', default='SGD',
-                        choices=['Adam', 'SGD'],
+                        choices=['Adam', "AdamW", 'SGD'],
                         help='loss: ' +
                         ' | '.join(['Adam', 'SGD']) +
                         ' (default: Adam)')
@@ -106,6 +110,7 @@ def parse_args():
     parser.add_argument('--resume', type=str)
     parser.add_argument("--seed", type=int, default=40)
     parser.add_argument("--pretrain", type=str, default="imagenet1k")
+    parser.add_argument("--include_nir", action="store_true")
 
     config = parser.parse_args()
 
@@ -163,7 +168,7 @@ def validate(config, val_loader, model, criterion):
     # switch to evaluate mode
     model.eval()
 
-    with torch.no_grad():
+    with torch.inference_mode():
         pbar = tqdm(total=len(val_loader))
         for input, target, _ in val_loader:
             input = input.cuda()
@@ -201,6 +206,35 @@ def validate(config, val_loader, model, criterion):
                         ('iou', avg_meters['iou'].avg)])
 
 
+def test(config, loader, model, criterion):
+    avg_meters = {'loss': AverageMeter()}
+
+    # switch to evaluate mode
+    model.eval()
+
+    with torch.inference_mode():
+        pbar = tqdm(total=len(loader))
+        for input, _ in loader:
+            input = input.cuda()
+
+            # compute output
+            output = model(input)
+
+            # avg_meters['loss'].update(loss.item(), input.size(0))
+            # avg_meters['iou'].update(iou, input.size(0))
+
+            postfix = OrderedDict([
+                ('loss', avg_meters['loss'].avg)
+            ])
+            pbar.set_postfix(postfix)
+            pbar.update(1)
+        pbar.close()
+
+    return OrderedDict([('loss', avg_meters['loss'].avg),
+                        ('iou', avg_meters['iou'].avg)])
+
+
+
 def main():
     config = vars(parse_args())
 
@@ -208,6 +242,8 @@ def main():
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
     if config['name'] is None:
         if config['deep_supervision']:
@@ -239,8 +275,10 @@ def main():
     elif config["arch"] in ["v2"]:
         model = UNetWithResnet50Encoder(n_classes=config["num_classes"], pretrain=config["pretrain"])
     elif config["arch"] in ["v3"]:
-        model = AttentionUNet(3, config["num_classes"])
+        model = AttentionUNet(config["input_channels"], config["num_classes"])
         model = init_weights(model, "kaiming")
+    elif config["arch"] in ["v4"]:
+        model = NAFNet(img_channel=config["input_channels"], out_channel=config["num_classes"], width=32, middle_blk_num=1, enc_blk_nums=[1, 1, 1, 28], dec_blk_nums=[1, 1, 1, 1])
     else:
         raise Exception("Not supported architecture")
 
@@ -255,6 +293,8 @@ def main():
     if config['optimizer'] == 'Adam':
         optimizer = optim.Adam(
             params, lr=config['lr'], weight_decay=config['weight_decay'])
+    elif config['optimizer'] == 'AdamW':
+        optimizer = optim.AdamW(params, config["lr"], weight_decay=config["weight_decay"])
     elif config['optimizer'] == 'SGD':
         optimizer = optim.SGD(params, lr=config['lr'], momentum=config['momentum'],
                               nesterov=config['nesterov'], weight_decay=config['weight_decay'])
@@ -274,57 +314,35 @@ def main():
     else:
         raise NotImplementedError
 
-    # Data loading code
-    train_img_dir = os.path.join(config["train_dir"], "images")
-    train_mask_dir = os.path.join(config["train_dir"], "masks")
-    val_img_dir = os.path.join(config["eval_dir"], "images")
-    val_mask_dir = os.path.join(config["eval_dir"], "masks")
-    train_img_ids = sorted(os.listdir(train_img_dir))
-    val_img_ids = sorted(os.listdir(val_img_dir))
+    def seed_worker(worker_id):
+        worker_seed = torch.initial_seed() % 2**32
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
 
-    # filter empty images - only for 38cloud and 95cloud
-    if config["dataset"] in ["38cloud", "95cloud"]:
-        with open(os.path.join(config["train_dir"], "nonempty.txt"), "r") as f:
-            nonempty = f.read().splitlines()
-        nonempty_set = set(nonempty)
-        tii_set = set(map(lambda x: x[4:-4], train_img_ids))
-        # vii_set = set(map(lambda x: x[4:-4], val_img_ids))
-        tii = list(tii_set.intersection(nonempty_set))
-        # vii = list(vii_set.intersection(nonempty_set))
-        train_img_ids = list(map(lambda x: "RGB_" + x + ".png", tii))
-        # val_img_ids = list(map(lambda x: "RGB_" + x + ".png", vii))
-
-    train_dataset = Dataset(
-        img_ids=train_img_ids,
-        img_dir=train_img_dir,
-        mask_dir=train_mask_dir,
-        img_ext=config['img_ext'],
-        mask_ext=config['mask_ext'],
-        num_classes=config['num_classes'],
-        mode="train",
-        size=(config["input_h"], config["input_w"]))
-    val_dataset = Dataset(
-        img_ids=val_img_ids,
-        img_dir=val_img_dir,
-        mask_dir=val_mask_dir,
-        img_ext=config['img_ext'],
-        mask_ext=config['mask_ext'],
-        num_classes=config['num_classes'],
-        mode="val",
-        size=(config["input_h"], config["input_w"]))
-
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=config['batch_size'],
-        shuffle=True,
-        num_workers=config['num_workers'],
-        drop_last=True)
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=config['batch_size'],
-        shuffle=False,
-        num_workers=config['num_workers'],
-        drop_last=False)
+    g = torch.Generator()
+    g.manual_seed(0)
+    if config["dataset"] in ["38cloud_16bit", "38cloud_8bit", "95cloud_16bit", "95cloud_8bit"]:
+        # custom transforms that change image and mask in the same way
+        # use default transforms if None
+        transforms_train = None
+        transforms_val = None
+        transforms_test = None
+        trainset = CloudData("/data/data", transforms_train, "train", "/data/data/38Cloud/train/nonempty.txt",
+                            "/data/data/95Cloud/95-cloud_training_only_additional_to38-cloud/nonempty_95.txt",
+                            True if config["dataset"][:2] == "95" else False,
+                            config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed=seed) 
+        valset = CloudData("/data/data", transforms_val, "eval", None, None, False,
+                            config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed=seed)
+        # testset = CloudData("/data/data", transforms_test, "train", None, None, False,
+        #                     config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed)
+        trainloader = DataLoader(trainset, config["batch_size"], True, num_workers=config["num_workers"],
+                                drop_last=False, worker_init_fn=seed_worker, generator=g)
+        valloader = DataLoader(valset, config["batch_size"], True, num_workers=config["num_workers"],
+                                drop_last=False, worker_init_fn=seed_worker, generator=g)
+        # testloader = DataLoader(testset, 1, False, num_workers=config["num_workers"],
+        #                         drop_last=False, worker_init_fn=seed_worker, generator=g)
+    else:
+        raise Exception("Not supported dataset")
 
     log = OrderedDict([
         ('epoch', []),
@@ -336,19 +354,20 @@ def main():
     ])
 
     if config['eval']:
-        val_log = validate(config, val_loader, model, criterion)
+        val_log = validate(config, valloader, model, criterion)
         print(val_log)
         exit(0)
 
     best_iou = 0
+    best_epoch = -1
     trigger = 0
     for epoch in range(config['epochs']):
         print('Epoch [%d/%d]' % (epoch, config['epochs']))
 
         # train for one epoch
-        train_log = train(config, train_loader, model, criterion, optimizer)
+        train_log = train(config, trainloader, model, criterion, optimizer)
         # evaluate on validation set
-        val_log = validate(config, val_loader, model, criterion)
+        val_log = validate(config, valloader, model, criterion)
 
         if config['scheduler'] == 'CosineAnnealingLR':
             scheduler.step()
@@ -374,6 +393,7 @@ def main():
             torch.save(model.state_dict(), 'models/%s/model.pth' %
                        config['name'])
             best_iou = val_log['iou']
+            best_epoch = epoch
             print("=> saved best model")
             trigger = 0
         if (epoch + 1) % config["save_per"] == 0:
@@ -385,7 +405,7 @@ def main():
             break
 
         torch.cuda.empty_cache()
-    print("Best IoU: ", best_iou)
+    print("Best validation IoU: {} ({})".format(best_iou, best_epoch))
 
 if __name__ == '__main__':
     main()
