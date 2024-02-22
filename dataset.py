@@ -194,7 +194,7 @@ class CloudData(torch.utils.data.Dataset):
             img = cv2.imread(img_fp, cv2.IMREAD_UNCHANGED)
             img = cv2.cvtColor(img.astype(np.float32) / (2 ** 16 - 1), cv2.COLOR_BGR2RGB)
             gt = cv2.imread(gt_fp, cv2.IMREAD_UNCHANGED)
-            gt = gt.astype(np.float32) / (2 ** 16 - 1)
+            gt = (gt / 255).astype(np.float32)
             if self.include_nir:
                 nir = cv2.imread(nir_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
                 img = np.concatenate([img, nir[:, :, None]], axis=-1)
