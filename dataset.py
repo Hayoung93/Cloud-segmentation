@@ -10,6 +10,59 @@ from torchvision import transforms as ttf
 from torchvision.transforms import functional as F
 
 
+class CloudOverlapData(torch.utils.data.Dataset):
+    def __init__(self, config, root, mode="train", nonempty=False, seed=0):
+        self.config = config
+        self.root = root
+        self.mode = mode
+        assert mode in ["train", "eval"]
+        self.nonempty = nonempty
+        self.seed = seed
+
+        self.colorjitter = ColotJitter4Channels(0.2, 0.2, 0.2, 0.1)
+        self.resize = ttf.Resize((384, 384))
+
+        if mode == "train":
+            if nonempty:
+                with open(os.path.join(root, "nonempty_20percent_list.txt"), "r") as f:
+                    self.ids = f.read().splitlines()
+            else:
+                with open(os.path.join(root, "train_list.txt"), "r") as f:
+                    self.ids = f.read().splitlines()
+        elif mode == "eval":
+            with open(os.path.join(root, "eval_list.txt"), "r") as f:
+                self.ids = f.read().splitlines()
+    
+    def __getitem__(self, idx):
+        _id = self.ids[idx]
+        fp_img = os.path.join(self.root, "images", "patch_" + _id + ".TIF")
+        fp_gt = os.path.join(self.root, "masks", "gt_" + _id + ".TIF")
+        img = cv2.imread(fp_img, -1)
+        gt = cv2.imread(fp_gt, -1) / 255.
+        # transform
+        img, gt = torch.from_numpy(img).permute(2, 0, 1), torch.from_numpy(gt).unsqueeze(0)
+        img, gt = self.resize(img), self.resize(gt)
+        # random rotation
+        rand_rot = torch.randint(0, 4, (1,)).item()
+        if rand_rot:
+            img = F.rotate(img, rand_rot * 90.)
+            gt = F.rotate(gt, rand_rot * 90.)
+        # random hflip
+        rand_flip = torch.randint(0, 2, (1,)).item()
+        if rand_flip:
+            img = F.hflip(img)
+            gt = F.hflip(gt)
+        # random color jitter
+        if not self.config["exclude_colorjitter"]:
+            rand_color = torch.randint(0, 2, (1,)).item()
+            if rand_color:
+                img = self.colorjitter(img)
+        return img, gt, fp_img
+
+    def __len__(self):
+        return len(self.ids)
+
+
 class ColotJitter4Channels(torch.nn.Module):
     def __init__(self, brightness: float, contrast: float, saturation: float, hue: float):
         super().__init__()
@@ -47,7 +100,8 @@ class ColotJitter4Channels(torch.nn.Module):
 
 
 class CloudData(torch.utils.data.Dataset):
-    def __init__(self, config, root, transforms=None, mode="train", nonempty_38=None, nonempty_95=None, include_95=False, include_nir=False, bit=8, path_38=None, path_95=None, seed=0):
+    def __init__(self, config, root, transforms=None, mode="train", nonempty_38=None, nonempty_95=None, include_95=False,
+                include_nir=False, bit=8, path_38=None, path_95=None, seed=0):
         self.config = config
         self.root = root
         self.transforms = transforms
@@ -102,12 +156,9 @@ class CloudData(torch.utils.data.Dataset):
         elif mode == "test":  # No gt return, computing scores on test set must done in a separate code
             with open(os.path.join(self.path_38, "test", "test_patch_list.txt"), "r") as f:
                 self.test_names = f.read().splitlines()
-            if bit == 8:
-                self.images_dir = os.path.join(self.path_38, "test", "rgb_test", "images")
-            elif bit == 16:
-                self.red_dir = os.path.join(self.path_38, "test", "test_red")
-                self.green_dir = os.path.join(self.path_38, "test", "test_green")
-                self.blue_dir = os.path.join(self.path_38, "test", "test_blue")
+            self.red_dir = os.path.join(self.path_38, "test", "test_red")
+            self.green_dir = os.path.join(self.path_38, "test", "test_green")
+            self.blue_dir = os.path.join(self.path_38, "test", "test_blue")
             if include_nir:
                 self.nir_dir = os.path.join(self.path_38, "test", "test_nir")
 
@@ -131,32 +182,32 @@ class CloudData(torch.utils.data.Dataset):
             assert mode == "train", "Currently only supports train mode"
             with open(nonempty_38, "r") as f:
                 nonempty_files_38 = f.read().splitlines()
-            self.train_names_38 = list(set(self.train_names_38).intersection(set(nonempty_files_38)))
+            self.train_names_38 = sorted(list(set(self.train_names_38).intersection(set(nonempty_files_38))))
         if (nonempty_95 is not None) and include_95:
             assert mode == "train", "Currently only supports train mode"
             with open(nonempty_95, "r") as f:
                 nonempty_files_95 = f.read().splitlines()
-            self.train_names_95 = list(set(self.train_names_95).intersection(set(nonempty_files_95)))
+            self.train_names_95 = sorted(list(set(self.train_names_95).intersection(set(nonempty_files_95))))
 
     # use pre-computed images
     def getitem_8bit(self, idx):
         if self.mode == "train":
             # paths
-            if idx <= self.len_38:  # get data from 38Cloud
+            if idx < self.len_38:  # get data from 38Cloud
                 name = self.train_names_38[idx]
                 img_fp = os.path.join(self.images_dir_38, "RGB_" + name + ".png")
                 gt_fp = os.path.join(self.gts_dir_38, "gt_" + name + ".png")
                 if self.include_nir:
                     nir_fp = os.path.join(self.nir_dir_38, "nir_" + name + ".TIF")
             else:  # get data from 95Cloud
-                name = self.train_names_95[idx]
+                name = self.train_names_95[idx - self.len_38]
                 img_fp = os.path.join(self.images_dir_95, "RGB_" + name + ".png")
                 gt_fp = os.path.join(self.gts_dir_95, "gt_" + name + ".png")
                 if self.include_nir:
                     nir_fp = os.path.join(self.nir_dir_95, "nir_" + name + ".TIF")
             # read
             img = cv2.imread(img_fp, cv2.IMREAD_UNCHANGED)
-            img = cv2.cvtColor(img.astype(np.float32) / (2 ** 16 - 1), cv2.COLOR_BGR2RGB)
+            img = cv2.cvtColor(img.astype(np.float32) / 255, cv2.COLOR_BGR2RGB)
             gt = cv2.imread(gt_fp, cv2.IMREAD_UNCHANGED)
             gt = (gt / 255).astype(np.float32)
             if self.include_nir:
@@ -194,7 +245,7 @@ class CloudData(torch.utils.data.Dataset):
                 nir_fp = os.path.join(self.nir_dir, "nir_" + name + ".TIF")
             # read
             img = cv2.imread(img_fp, cv2.IMREAD_UNCHANGED)
-            img = cv2.cvtColor(img.astype(np.float32) / (2 ** 16 - 1), cv2.COLOR_BGR2RGB)
+            img = cv2.cvtColor(img.astype(np.float32) / 255, cv2.COLOR_BGR2RGB)
             gt = cv2.imread(gt_fp, cv2.IMREAD_UNCHANGED)
             gt = (gt / 255).astype(np.float32)
             if self.include_nir:
@@ -211,15 +262,24 @@ class CloudData(torch.utils.data.Dataset):
         elif self.mode == "test":
             # paths
             name = self.test_names[idx]
-            img_fp = os.path.join(self.images_dir, "RGB_" + name + ".png")
+            red_fp = os.path.join(self.red_dir, "red_" + name + ".TIF")
+            green_fp = os.path.join(self.green_dir, "green_" + name + ".TIF")
+            blue_fp = os.path.join(self.blue_dir, "blue_" + name + ".TIF")
             if self.include_nir:
                 nir_fp = os.path.join(self.nir_dir, "nir_" + name + ".TIF")
             # read
-            img = cv2.imread(img_fp, cv2.IMREAD_UNCHANGED)
-            img = cv2.cvtColor(img.astype(np.float32) / (2 ** 16 - 1), cv2.COLOR_BGR2RGB)
+            img_r = cv2.imread(red_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
+            img_g = cv2.imread(green_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
+            img_b = cv2.imread(blue_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
+
+            # ?? act as 8bit png input ?? -> maybe saving and loading it is required
+            img_r, img_g, img_b = img_r * 255, img_g * 255, img_b * 255
+            img_r, img_g, img_b = img_r / 255, img_g / 255, img_b / 255
+
+            img = np.stack([img_r, img_g, img_b], axis=0)
             if self.include_nir:
                 nir = cv2.imread(nir_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
-                img = np.concatenate([img, nir[:, :, None]], axis=-1)
+                img = np.concatenate([img, nir[None, :, :]], axis=0)
             # transform, nothing as default
             if self.transforms is not None:
                 img = self.transforms(img)
@@ -227,7 +287,7 @@ class CloudData(torch.utils.data.Dataset):
                 img = torch.from_numpy(img).permute(2, 0, 1)
                 img = self.resize(img)
             # return
-            return img, img_fp
+            return img, red_fp
         else:
             raise Exception("Not supported mode: {}".format(self.mode))
 
@@ -235,7 +295,7 @@ class CloudData(torch.utils.data.Dataset):
     def getitem_16bit(self, idx):
         if self.mode == "train":
             # paths
-            if idx <= self.len_38:  # get data from 38Cloud
+            if idx < self.len_38:  # get data from 38Cloud
                 name = self.train_names_38[idx]
                 red_fp = os.path.join(self.red_dir_38, "red_" + name + ".TIF")
                 green_fp = os.path.join(self.green_dir_38, "green_" + name + ".TIF")
@@ -244,10 +304,10 @@ class CloudData(torch.utils.data.Dataset):
                 if self.include_nir:
                     nir_fp = os.path.join(self.nir_dir_38, "nir_" + name + ".TIF")
             else:  # get data from 95Cloud
-                name = self.train_names_95[idx]
-                red_fp = os.path.join(self.red_dir_38, "red_" + name + ".TIF")
-                green_fp = os.path.join(self.green_dir_38, "green_" + name + ".TIF")
-                blue_fp = os.path.join(self.blue_dir_38, "blue_" + name + ".TIF")
+                name = self.train_names_95[idx - self.len_38]
+                red_fp = os.path.join(self.red_dir_95, "red_" + name + ".TIF")
+                green_fp = os.path.join(self.green_dir_95, "green_" + name + ".TIF")
+                blue_fp = os.path.join(self.blue_dir_95, "blue_" + name + ".TIF")
                 gt_fp = os.path.join(self.gts_dir_95, "gt_" + name + ".TIF")
                 if self.include_nir:
                     nir_fp = os.path.join(self.nir_dir_95, "nir_" + name + ".TIF")
@@ -260,7 +320,7 @@ class CloudData(torch.utils.data.Dataset):
             gt = (gt / 255).astype(np.float32)
             if self.include_nir:
                 nir = cv2.imread(nir_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
-                img = np.concatenate([img, nir[:, :, None]], axis=0)
+                img = np.concatenate([img, nir[None, :, :]], axis=0)
             # transform
             if self.transforms is not None:
                 img, gt = self.transforms(img, gt)
@@ -296,7 +356,7 @@ class CloudData(torch.utils.data.Dataset):
             img_r = cv2.imread(red_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
             img_g = cv2.imread(green_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
             img_b = cv2.imread(blue_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
-            img = np.stack([img_r, img_g, img_b], axis=0)
+            img = np.stack([img_r, img_g, img_b], axis=-1)
             gt = cv2.imread(gt_fp, cv2.IMREAD_UNCHANGED)
             gt = (gt / 255).astype(np.float32)
             if self.include_nir:
@@ -313,12 +373,16 @@ class CloudData(torch.utils.data.Dataset):
         elif self.mode == "test":
             # paths
             name = self.test_names[idx]
-            img_fp = os.path.join(self.images_dir, "RGB_" + name + ".png")
+            red_fp = os.path.join(self.red_dir, "red_" + name + ".TIF")
+            green_fp = os.path.join(self.green_dir, "green_" + name + ".TIF")
+            blue_fp = os.path.join(self.blue_dir, "blue_" + name + ".TIF")
             if self.include_nir:
                 nir_fp = os.path.join(self.nir_dir, "nir_" + name + ".TIF")
             # read
-            img = cv2.imread(img_fp, cv2.IMREAD_UNCHANGED)
-            img = cv2.cvtColor(img.astype(np.float32) / (2 ** 16 - 1), cv2.COLOR_BGR2RGB)
+            img_r = cv2.imread(red_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
+            img_g = cv2.imread(green_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
+            img_b = cv2.imread(blue_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
+            img = np.stack([img_r, img_g, img_b], axis=-1)
             if self.include_nir:
                 nir = cv2.imread(nir_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
                 img = np.concatenate([img, nir[:, :, None]], axis=-1)
@@ -329,7 +393,7 @@ class CloudData(torch.utils.data.Dataset):
                 img = torch.from_numpy(img).permute(2, 0, 1)
                 img = self.resize(img)
             # return
-            return img, img_fp
+            return img, red_fp
         else:
             raise Exception("Not supported mode: {}".format(self.mode))
 

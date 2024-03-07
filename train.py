@@ -3,6 +3,7 @@ import os
 import random
 from collections import OrderedDict
 from glob import glob
+import shutil
 
 import pandas as pd
 import numpy as np
@@ -14,11 +15,12 @@ import yaml
 from sklearn.model_selection import train_test_split
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
+from torchvision.utils import save_image
 from tqdm import tqdm
 
 import archs
 import losses
-from dataset import Dataset, CloudData
+from dataset import Dataset, CloudData, CloudOverlapData
 from metrics import iou_score
 from utils import AverageMeter, str2bool
 
@@ -26,8 +28,9 @@ ARCH_NAMES = archs.__all__
 LOSS_NAMES = losses.__all__
 LOSS_NAMES.append('BCEWithLogitsLoss')
 
-torch.backends.cudnn.benchmark = False
-torch.use_deterministic_algorithms(True)
+# torch.backends.cudnn.benchmark = False
+# torch.backends.cudnn.deterministic = True
+# torch.use_deterministic_algorithms(True)
 
 from resnet50_unetpp import UNetWithResnet50Encoder
 from attention_unet import AttentionUNet, init_weights
@@ -68,8 +71,7 @@ def parse_args():
                         ' (default: BCEDiceLoss)')
     
     # dataset
-    parser.add_argument('--dataset', default='dsb2018_96',
-                        help='dataset name')
+    parser.add_argument('--dataset', default='38cloud_16bit')
     parser.add_argument("--train_dir", type=str)
     parser.add_argument("--eval_dir", type=str)
     parser.add_argument('--img_ext', default='.png',
@@ -107,11 +109,14 @@ def parse_args():
     parser.add_argument('--num_workers', default=4, type=int)
 
     parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--test', action='store_true')
+    parser.add_argument("--out_dir", type=str, default="", help="for saving val/test img")
     parser.add_argument('--resume', type=str)
     parser.add_argument("--seed", type=int, default=40)
     parser.add_argument("--pretrain", type=str, default="imagenet1k")
     parser.add_argument("--include_nir", action="store_true")
     parser.add_argument("--exclude_colorjitter", action="store_true")
+    parser.add_argument("--dataparallel", action="store_true")
 
     config = parser.parse_args()
 
@@ -123,6 +128,13 @@ def train(config, train_loader, model, criterion, optimizer):
                   'iou': AverageMeter()}
 
     model.train()
+
+    seed = config["seed"]
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
     pbar = tqdm(total=len(train_loader))
     for input, target, _ in train_loader:
@@ -171,7 +183,7 @@ def validate(config, val_loader, model, criterion):
 
     with torch.inference_mode():
         pbar = tqdm(total=len(val_loader))
-        for input, target, _ in val_loader:
+        for input, target, img_fp in val_loader:
             input = input.cuda()
             target = target.cuda()
 
@@ -188,7 +200,10 @@ def validate(config, val_loader, model, criterion):
                 output = model(input)
                 loss = criterion(output, target)
                 avg_meters['loss'].update(loss.item(), input.size(0))
-                for out, tar in zip(output, target):
+                for i, (out, tar) in enumerate(zip(output, target)):
+                    # if config["out_dir"] != "":
+                    #     shutil.copyfile(img_fp[i], os.path.join(config["out_dir"], "inputs", img_fp[i].split("/")[-1]))
+                    #     save_image((out.sigmoid() > 0.5).to(torch.float), os.path.join(config["out_dir"], "outputs", img_fp[i].split("/")[-1].replace(".TIF", ".png")))
                     iou = iou_score(out, tar)
                     avg_meters['iou'].update(iou)
 
@@ -207,32 +222,28 @@ def validate(config, val_loader, model, criterion):
                         ('iou', avg_meters['iou'].avg)])
 
 
-def test(config, loader, model, criterion):
-    avg_meters = {'loss': AverageMeter()}
-
+def test(config, loader, model):
     # switch to evaluate mode
     model.eval()
+    if config["out_dir"] != "":
+        os.makedirs(config["out_dir"], exist_ok=True)
 
     with torch.inference_mode():
         pbar = tqdm(total=len(loader))
-        for input, _ in loader:
+        for input, img_fp in loader:
             input = input.cuda()
 
             # compute output
             output = model(input)
-
-            # avg_meters['loss'].update(loss.item(), input.size(0))
-            # avg_meters['iou'].update(iou, input.size(0))
-
-            postfix = OrderedDict([
-                ('loss', avg_meters['loss'].avg)
-            ])
-            pbar.set_postfix(postfix)
+            if config["out_dir"] != "":
+                fp_split = img_fp[0].split("_")
+                by_ind = fp_split.index("by")
+                _id = "_".join(fp_split[by_ind - 2:]).replace(".TIF", "")
+                # save_image(output, os.path.join(config["out_dir"], _id + ".png"))
+                torch.save(output[0][0], os.path.join(config["out_dir"], _id + ".pt"))
+            # save
             pbar.update(1)
         pbar.close()
-
-    return OrderedDict([('loss', avg_meters['loss'].avg),
-                        ('iou', avg_meters['iou'].avg)])
 
 
 
@@ -278,12 +289,19 @@ def main():
     elif config["arch"] in ["v3"]:
         model = AttentionUNet(config["input_channels"], config["num_classes"])
         model = init_weights(model, "kaiming")
-    elif config["arch"] in ["v4"]:
-        model = NAFNet(img_channel=config["input_channels"], out_channel=config["num_classes"], width=32, middle_blk_num=1, enc_blk_nums=[1, 1, 1, 28], dec_blk_nums=[1, 1, 1, 1])
+    elif "v4" in config["arch"]:
+        if config["arch"] == "v4":  # original nafnet layers
+            model = NAFNet(img_channel=config["input_channels"], out_channel=config["num_classes"], width=32, middle_blk_num=1, enc_blk_nums=[1, 1, 1, 28], dec_blk_nums=[1, 1, 1, 1])
+        elif config["arch"] == "v4-1":  # mimic resnet34 layers
+            model = NAFNet(img_channel=config["input_channels"], out_channel=config["num_classes"], width=32, middle_blk_num=1, enc_blk_nums=[3, 4, 6, 3], dec_blk_nums=[3, 4, 6, 3])
+        elif config["arch"] == "v4-2":  # mimic resnet34 + skip connection with input before last conv
+            model = NAFNet(img_channel=config["input_channels"], out_channel=config["num_classes"], width=32, middle_blk_num=1, enc_blk_nums=[3, 4, 6, 3], dec_blk_nums=[3, 4, 6, 3], last_connection=True)
     else:
         raise Exception("Not supported architecture")
 
     model = model.cuda()
+    if config["dataparallel"]:
+        model = torch.nn.DataParallel(model)
 
     params = filter(lambda p: p.requires_grad, model.parameters())
     if config['optimizer'] == 'Adam':
@@ -329,7 +347,10 @@ def main():
         start_epoch = cp["epoch"] + 1
 
     def seed_worker(worker_id):
-        worker_seed = torch.initial_seed() % 2**32
+        # worker_seed = torch.initial_seed() % 2**32
+        worker_seed = worker_id % 2**32
+        torch.manual_seed(worker_seed)
+        torch.cuda.manual_seed(worker_seed)
         np.random.seed(worker_seed)
         random.seed(worker_seed)
 
@@ -347,16 +368,19 @@ def main():
                             config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed=seed) 
         valset = CloudData(config, "/data/data", transforms_val, "eval", None, None, False,
                             config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed=seed)
-        # testset = CloudData(config, "/data/data", transforms_test, "train", None, None, False,
-        #                     config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed)
-        trainloader = DataLoader(trainset, config["batch_size"], True, num_workers=config["num_workers"],
+        testset = CloudData(config, "/data/data", transforms_test, "test", None, None, False,
+                            config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed=seed)
+        testloader = DataLoader(testset, 1, False, num_workers=config["num_workers"],
                                 drop_last=False, worker_init_fn=seed_worker, generator=g)
-        valloader = DataLoader(valset, config["batch_size"], True, num_workers=config["num_workers"],
-                                drop_last=False, worker_init_fn=seed_worker, generator=g)
-        # testloader = DataLoader(testset, 1, False, num_workers=config["num_workers"],
-        #                         drop_last=False, worker_init_fn=seed_worker, generator=g)
+    elif config["dataset"] == "cloud_overlap":
+        trainset = CloudOverlapData(config, "/data/data/38Cloud/train/rgbn_16bit_overlap", "train", True)  # nonempty patches
+        valset = CloudOverlapData(config, "/data/data/38Cloud/train/rgbn_16bit_overlap", "eval")
     else:
         raise Exception("Not supported dataset")
+    trainloader = DataLoader(trainset, config["batch_size"], True, num_workers=config["num_workers"],
+                            drop_last=False, worker_init_fn=seed_worker, generator=g)
+    valloader = DataLoader(valset, config["batch_size"], False, num_workers=config["num_workers"],
+                            drop_last=False, worker_init_fn=seed_worker, generator=g)
 
     log = OrderedDict([
         ('epoch', []),
@@ -370,6 +394,10 @@ def main():
     if config['eval']:
         val_log = validate(config, valloader, model, criterion)
         print(val_log)
+        exit(0)
+    
+    if config["test"]:
+        test(config, testloader, model)
         exit(0)
 
     for epoch in range(start_epoch, config['epochs']):
@@ -405,7 +433,7 @@ def main():
             best_epoch = epoch
             trigger = 0
             save_dict = {
-                "state_dict": model.state_dict(),
+                "state_dict": model.module.state_dict() if config["dataparallel"] else model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
                 "best_iou": best_iou,
@@ -416,7 +444,7 @@ def main():
             print("=> saved best model")
         if (epoch + 1) % config["save_per"] == 0:
             save_dict = {
-                "state_dict": model.state_dict(),
+                "state_dict": model.module.state_dict() if config["dataparallel"] else model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
                 "best_iou": best_iou,
@@ -434,7 +462,7 @@ def main():
 
         # save last status for resume
         save_dict = {
-            "state_dict": model.state_dict(),
+            "state_dict": model.module.state_dict() if config["dataparallel"] else model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "best_iou": best_iou,

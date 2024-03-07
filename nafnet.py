@@ -210,12 +210,17 @@ class NAFBlock(nn.Module):
 
 class NAFNet(nn.Module):
 
-    def __init__(self, img_channel=3, out_channel=2, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[]):
+    def __init__(self, img_channel=3, out_channel=2, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[],
+                    last_connection=False):
         super().__init__()
 
         self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1,
                               bias=True)
-        self.ending = nn.Conv2d(in_channels=width, out_channels=out_channel, kernel_size=3, padding=1, stride=1, groups=1,
+        self.last_connection = last_connection
+        end_in_ch = width
+        if last_connection:
+            end_in_ch += img_channel
+        self.ending = nn.Conv2d(in_channels=end_in_ch, out_channels=out_channel, kernel_size=3, padding=1, stride=1, groups=1,
                               bias=True)
 
         self.encoders = nn.ModuleList()
@@ -277,8 +282,9 @@ class NAFNet(nn.Module):
             x = x + enc_skip
             x = decoder(x)
 
+        if self.last_connection:
+            x = torch.cat([x, inp], dim=1)
         x = self.ending(x)
-        # x = x + inp
 
         return x[:, :, :H, :W]
 
