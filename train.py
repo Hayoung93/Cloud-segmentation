@@ -28,9 +28,9 @@ ARCH_NAMES = archs.__all__
 LOSS_NAMES = losses.__all__
 LOSS_NAMES.append('BCEWithLogitsLoss')
 
-# torch.backends.cudnn.benchmark = False
-# torch.backends.cudnn.deterministic = True
-# torch.use_deterministic_algorithms(True)
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
+torch.use_deterministic_algorithms(True)
 
 from resnet50_unetpp import UNetWithResnet50Encoder
 from attention_unet import AttentionUNet, init_weights

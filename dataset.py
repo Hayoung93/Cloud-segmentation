@@ -18,6 +18,9 @@ class CloudOverlapData(torch.utils.data.Dataset):
         assert mode in ["train", "eval"]
         self.nonempty = nonempty
         self.seed = seed
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
         self.colorjitter = ColotJitter4Channels(0.2, 0.2, 0.2, 0.1)
         self.resize = ttf.Resize((384, 384))
@@ -118,6 +121,8 @@ class CloudData(torch.utils.data.Dataset):
         self.path_95 = path_95 if path_95 is not None else os.path.join(root, "95Cloud")
         self.seed = seed
         torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
         self.colorjitter = ColotJitter4Channels(0.2, 0.2, 0.2, 0.1)
         self.resize = ttf.Resize((384, 384))
