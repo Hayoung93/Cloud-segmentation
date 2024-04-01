@@ -12,7 +12,6 @@ import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.optim as optim
 import yaml
-from sklearn.model_selection import train_test_split
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
@@ -20,7 +19,7 @@ from tqdm import tqdm
 
 import archs
 import losses
-from dataset import Dataset, CloudData, CloudOverlapData
+from dataset import CloudData, CloudOverlapData
 from metrics import iou_score
 from utils import AverageMeter, str2bool
 
