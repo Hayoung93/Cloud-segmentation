@@ -117,6 +117,7 @@ def parse_args():
     parser.add_argument("--include_nir", action="store_true")
     parser.add_argument("--exclude_colorjitter", action="store_true")
     parser.add_argument("--dataparallel", action="store_true")
+    parser.add_argument("--record_file", type=str, default="")
 
     config = parser.parse_args()
 
@@ -153,6 +154,15 @@ def train(config, train_loader, model, criterion, optimizer):
             output = model(input)
             loss = criterion(output, target)
             iou = iou_score(output, target)
+
+        # if config["record_file"] != "":
+        #     param_cumsum = 0
+        #     for n, p in model.named_parameters():
+        #         param_cumsum += p.sum()
+        #     with open(config["record_file"], "a") as f:
+        #         f.write(str(param_cumsum.item()) + "\n")
+        #     with open(config["record_file"].replace(".txt", "_rands.txt"), "a") as f:
+        #         f.write(str(_[1]) + "\n")
 
         # compute gradient and do optimizing step
         optimizer.zero_grad()
@@ -236,9 +246,12 @@ def test(config, loader, model):
             # compute output
             output = model(input)
             if config["out_dir"] != "":
-                fp_split = img_fp[0].split("_")
-                by_ind = fp_split.index("by")
-                _id = "_".join(fp_split[by_ind - 2:]).replace(".TIF", "")
+                if config["dataset"] in ["38cloud_16bit", "38cloud_8bit", "95cloud_16bit", "95cloud_8bit"]:
+                    fp_split = img_fp[0].split("_")
+                    by_ind = fp_split.index("by")
+                    _id = "_".join(fp_split[by_ind - 2:]).replace(".TIF", "")
+                elif config["dataset"] == "cloud_overlap":
+                    _id = img_fp[0]
                 # save_image(output, os.path.join(config["out_dir"], _id + ".png"))
                 torch.save(output[0][0], os.path.join(config["out_dir"], _id + ".pt"))
             # save
@@ -294,6 +307,10 @@ def main():
             model = NAFNet(img_channel=config["input_channels"], out_channel=config["num_classes"], width=32, middle_blk_num=1, enc_blk_nums=[1, 1, 1, 28], dec_blk_nums=[1, 1, 1, 1])
         elif config["arch"] == "v4-1":  # mimic resnet34 layers
             model = NAFNet(img_channel=config["input_channels"], out_channel=config["num_classes"], width=32, middle_blk_num=1, enc_blk_nums=[3, 4, 6, 3], dec_blk_nums=[3, 4, 6, 3])
+        elif config["arch"] == "v4-1-1":  # mimic resnet34 layers
+            model = NAFNet(img_channel=config["input_channels"], out_channel=config["num_classes"], width=32, middle_blk_num=1, enc_blk_nums=[3, 4, 6, 3], dec_blk_nums=[3, 6, 4, 3])
+        elif config["arch"] == "v4-1-2":
+            model = NAFNet(img_channel=config["input_channels"], out_channel=config["num_classes"], width=32, middle_blk_num=1, enc_blk_nums=[2, 4, 6, 8], dec_blk_nums=[8, 6, 4, 2])
         elif config["arch"] == "v4-2":  # mimic resnet34 + skip connection with input before last conv
             model = NAFNet(img_channel=config["input_channels"], out_channel=config["num_classes"], width=32, middle_blk_num=1, enc_blk_nums=[3, 4, 6, 3], dec_blk_nums=[3, 4, 6, 3], last_connection=True)
     else:
@@ -368,19 +385,21 @@ def main():
                             config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed=seed) 
         valset = CloudData(config, "/data/data", transforms_val, "eval", None, None, False,
                             config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed=seed)
-        testset = CloudData(config, "/data/data", transforms_test, "test", None, None, False,
+        if config["test"]:
+            testset = CloudData(config, "/data/data", transforms_test, "test", None, None, False,
                             config["include_nir"], int(config["dataset"].split("_")[1].replace("bit", "")), seed=seed)
-        testloader = DataLoader(testset, 1, False, num_workers=config["num_workers"],
-                                drop_last=False, worker_init_fn=seed_worker, generator=g)
     elif config["dataset"] == "cloud_overlap":
         trainset = CloudOverlapData(config, "/data/data/38Cloud/train/rgbn_16bit_overlap", "train", True)  # nonempty patches
         valset = CloudOverlapData(config, "/data/data/38Cloud/train/rgbn_16bit_overlap", "eval")
+        if config["test"]:
+            testset = CloudOverlapData(config, "/data/data/38Cloud/test/rgbn_16bit_overlap", "test")
     else:
         raise Exception("Not supported dataset")
     trainloader = DataLoader(trainset, config["batch_size"], True, num_workers=config["num_workers"],
                             drop_last=False, worker_init_fn=seed_worker, generator=g)
-    valloader = DataLoader(valset, config["batch_size"], False, num_workers=config["num_workers"],
-                            drop_last=False, worker_init_fn=seed_worker, generator=g)
+    valloader = DataLoader(valset, 1, False, num_workers=config["num_workers"], drop_last=False)
+    if config["test"]:
+        testloader = DataLoader(testset, 1, False, num_workers=config["num_workers"], drop_last=False)
 
     log = OrderedDict([
         ('epoch', []),

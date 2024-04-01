@@ -15,7 +15,7 @@ class CloudOverlapData(torch.utils.data.Dataset):
         self.config = config
         self.root = root
         self.mode = mode
-        assert mode in ["train", "eval"]
+        assert mode in ["train", "eval", "test"]
         self.nonempty = nonempty
         self.seed = seed
         torch.manual_seed(seed)
@@ -35,32 +35,39 @@ class CloudOverlapData(torch.utils.data.Dataset):
         elif mode == "eval":
             with open(os.path.join(root, "eval_list.txt"), "r") as f:
                 self.ids = f.read().splitlines()
+        elif mode == "test":
+            imgs = os.listdir(os.path.join(root, "images"))
+            self.ids = sorted(list(map(lambda x: x.replace("patch_", "").replace(".TIF", ""), imgs)))
     
     def __getitem__(self, idx):
         _id = self.ids[idx]
         fp_img = os.path.join(self.root, "images", "patch_" + _id + ".TIF")
-        fp_gt = os.path.join(self.root, "masks", "gt_" + _id + ".TIF")
         img = cv2.imread(fp_img, -1)
-        gt = cv2.imread(fp_gt, -1) / 255.
-        # transform
-        img, gt = torch.from_numpy(img).permute(2, 0, 1), torch.from_numpy(gt).unsqueeze(0)
-        img, gt = self.resize(img), self.resize(gt)
-        # random rotation
-        rand_rot = torch.randint(0, 4, (1,)).item()
-        if rand_rot:
-            img = F.rotate(img, rand_rot * 90.)
-            gt = F.rotate(gt, rand_rot * 90.)
-        # random hflip
-        rand_flip = torch.randint(0, 2, (1,)).item()
-        if rand_flip:
-            img = F.hflip(img)
-            gt = F.hflip(gt)
-        # random color jitter
-        if not self.config["exclude_colorjitter"]:
-            rand_color = torch.randint(0, 2, (1,)).item()
-            if rand_color:
-                img = self.colorjitter(img)
-        return img, gt, fp_img
+        if self.mode in ["train", "eval"]:
+            fp_gt = os.path.join(self.root, "masks", "gt_" + _id + ".TIF")
+            gt = cv2.imread(fp_gt, -1) / 255.
+            # transform
+            img, gt = torch.from_numpy(img).permute(2, 0, 1), torch.from_numpy(gt).unsqueeze(0)
+            img, gt = self.resize(img), self.resize(gt)
+            # random rotation
+            rand_rot = torch.randint(0, 4, (1,)).item()
+            if rand_rot:
+                img = F.rotate(img, rand_rot * 90.)
+                gt = F.rotate(gt, rand_rot * 90.)
+            # random hflip
+            rand_flip = torch.randint(0, 2, (1,)).item()
+            if rand_flip:
+                img = F.hflip(img)
+                gt = F.hflip(gt)
+            # random color jitter
+            if not self.config["exclude_colorjitter"]:
+                rand_color = torch.randint(0, 2, (1,)).item()
+                if rand_color:
+                    img = self.colorjitter(img)
+            return img, gt, fp_img
+        elif self.mode == "test":
+            img = torch.from_numpy(img).permute(2, 0, 1)
+            return img, _id
 
     def __len__(self):
         return len(self.ids)
@@ -197,6 +204,7 @@ class CloudData(torch.utils.data.Dataset):
     # use pre-computed images
     def getitem_8bit(self, idx):
         if self.mode == "train":
+            rands = []
             # paths
             if idx < self.len_38:  # get data from 38Cloud
                 name = self.train_names_38[idx]
@@ -227,20 +235,23 @@ class CloudData(torch.utils.data.Dataset):
                 img, gt = self.resize(img), self.resize(gt)
                 # random rotation
                 rand_rot = torch.randint(0, 4, (1,)).item()
+                rands.append(rand_rot)
                 if rand_rot:
                     img = F.rotate(img, rand_rot * 90.)
                     gt = F.rotate(gt, rand_rot * 90.)
                 # random hflip
                 rand_flip = torch.randint(0, 2, (1,)).item()
+                rands.append(rand_flip)
                 if rand_flip:
                     img = F.hflip(img)
                     gt = F.hflip(gt)
                 # random color jitter
                 if not self.config["exclude_colorjitter"]:
                     rand_color = torch.randint(0, 2, (1,)).item()
+                    rands.append(rand_color)
                     if rand_color:
                         img = self.colorjitter(img)
-            return img, gt, img_fp
+            return img, gt, (img_fp, rands)
         elif self.mode == "eval":
             # paths
             name = self.eval_names[idx]
@@ -277,7 +288,7 @@ class CloudData(torch.utils.data.Dataset):
             img_g = cv2.imread(green_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
             img_b = cv2.imread(blue_fp, cv2.IMREAD_UNCHANGED).astype(np.float32) / (2 ** 16 - 1)
 
-            # ?? act as 8bit png input ?? -> maybe saving and loading it is required
+            # ?? act as 8bit png input ?? -> maybe saving and loading required
             img_r, img_g, img_b = img_r * 255, img_g * 255, img_b * 255
             img_r, img_g, img_b = img_r / 255, img_g / 255, img_b / 255
 
