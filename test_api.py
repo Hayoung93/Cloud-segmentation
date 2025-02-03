@@ -19,7 +19,7 @@ def main(args):
     assert ext in ["jpg", "png"], "Input image file format must be jpg or png (lowercase)"
 
     # data to send
-    data = {"input_image": (args.input_image, open(args.input_image, "rb")), "Content-Type": "image/{}".format(ext)}
+    data = {"input_image": (args.input_image, open(args.input_image, "rb"), "image/{}".format(ext))}
 
     # send & recieve data
     response = requests.post(args.address, files=data)
